@@ -1,10 +1,125 @@
 ---
-# Ansible galaxy is not capable to download git submodules. We clone here Galaxy-flavor-recipes in /tmp
+#______________________________________
+# Galaxyctl facts
+- set_fact:
+    galaxyctl_bin_path: '/usr/bin'
+  when: ansible_os_family == "RedHat"
+
+- set_fact:
+    galaxyctl_bin_path: '/usr/local/bin'
+  when: ansible_os_family == "Debian"
+
+#______________________________________
+# Copy script to read galaxy config file
+- name: Copy galaxy configuration file reader
+  get_url:
+    url: 'https://raw.githubusercontent.com/Laniakea-elixir-it/Scripts/master/galaxy/read_galaxy_config_file.py'
+    dest: '/tmp/read_galaxy_config_file.py'
+    mode: a+x
+
+#______________________________________
+# get galaxy version number to support for older galaxy versione (<18.01) when ini file was used
+
+- name: Get Galaxy version number only for comparison
+  set_fact:
+    galaxy_version_number: "{{ GALAXY_VERSION | replace('release_','') }}"
+  when: (GALAXY_VERSION != 'master') or (GALAXY_VERSION != 'dev')
+
+- debug:
+    msg: 'Galaxy version: {{ GALAXY_VERSION }}'
+
+- debug:
+    msg: 'Galaxy version number: {{ galaxy_version_number }}'
+  when: galaxy_version_number is defined
+
+# We set galaxy_version_number to 100.0 if master or dev branch is selected.
+# This simplify ansible logic, since we can use the galaxy_version_number to
+# trigger current muster and dev support.
+# Currently they are using yaml code base style.
+- name: 'Set Galaxy version number to 100.0 if master or dev branch'
+  set_fact:
+    galaxy_version_number: '100.0'
+  when: (GALAXY_VERSION == 'master') or (GALAXY_VERSION == 'dev')
+
+- name: Support for older version with ini configuration file
+  set_fact:
+     galaxy_config_style: 'ini-paste'
+  when: galaxy_version_number|float < 18.01
+
+- debug:
+   msg: "{{ item }}"
+  with_items:
+    - 'Galaxy configuration style: "{{ galaxy_config_style }}"'
+    - 'Galaxy configuration section in {{ galaxy_config_file }}: {{ galaxy_config_section }}'
+
+#______________________________________
+# We clone here Galaxy-flavor-recipes in {{galaxy_tools_base_dir}}
+- name: 'Check if {{ galaxy_tools_base_dir }} exist'
+  stat:
+    path: '{{ galaxy_tools_base_dir }}/Galaxy-flavors-recipes'
+  register: tool_dir_path
+
+- name: 'Create {{ galaxy_tools_base_dir }}'
+  file:
+    path: '{{ galaxy_tools_base_dir }}'
+    state: directory
+  when: not tool_dir_path.stat.exists|bool
+  become_user: root
+  become_method: sudo
+
 - name: Get Galaxy flavor recipes
   git:
-    repo: 'https://github.com/indigo-dc/Galaxy-flavors-recipes.git'
+    repo: '{{ galaxy_flavors_recipes_url }}'
+    dest: '{{ galaxy_flavors_recipes_dir }}'
+    version: '{{ galaxy_flavors_recipes_tag }}'
     clone: yes
     force: yes
-    dest: '{{ galaxy_tools_base_dir }}/Galaxy-flavors-recipes'
+  when: not tool_dir_path.stat.exists|bool
+  become_user: root
+  become_method: sudo
+
+- name: Include sources list
+  include: '{{ galaxy_flavors_recipes_dir }}/{{galaxy_flavor}}/{{galaxy_flavor}}-sources-list.yml'
+
+- debug:
+    msg: "{{ item }}"
+  with_items:
+   - 'workflow: {{ install_workflows }}'
+   - 'data: {{ install_data_libraries }}'
+
+#______________________________________
+- include: create_bootstrap_user.yml
+  when: create_bootstrap_user|bool
+  become_user: '{{galaxy_user}}'
+  become: yes
+
+- include: read_galaxy_config_file.yml
 
 - include: tools.yml
+
+- include: interactive_tours.yml
+  when: install_interactive_tours|bool
+
+- include: workflows_and_libraries_17.yml
+  when:
+   - galaxy_version_number|float < 18.00
+   - (install_workflows|bool) or (install_data_libraries|bool)
+
+- include: workflows_and_libraries.yml
+  when:
+   - galaxy_version_number|float >= 18.00
+   - (install_workflows|bool) or (install_data_libraries|bool)
+
+- include: assets.yml
+  when: add_more_assets|bool
+
+- include: delete_bootstrap_user.yml
+  when: create_bootstrap_user|bool
+  become_user: '{{galaxy_user}}'
+  become: yes
+
+#______________________________________
+- name: Lock role
+  template:
+    src: 'indigo-dc.galaxycloud-tools.lock.j2'
+    dest: '{{lock_file_path}}/indigo-dc.galaxycloud-tools.lock'

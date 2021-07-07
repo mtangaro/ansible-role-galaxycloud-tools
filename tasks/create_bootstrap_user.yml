@@ -1,0 +1,90 @@
+---
+- include: start_postgres.yml
+  become_user: root
+  become_method: sudo
+
+- name: '[release_17.**] Copy manage_galaxy_bootstrap_user script to {{ galaxy_custom_script_path }}'
+  template:
+    src: 'manage_galaxy_bootstrap_user.17.py.j2'
+    dest: '{{ galaxy_custom_script_path }}/manage_galaxy_bootstrap_user.py'
+  when: galaxy_version_number|float < 18.00
+  become_user: root
+  become_method: sudo
+
+- name: 'Copy manage_galaxy_bootstrap_user script to {{ galaxy_custom_script_path }}'
+  template:
+    src: 'manage_galaxy_bootstrap_user.py.j2'
+    dest: '{{ galaxy_custom_script_path }}/manage_galaxy_bootstrap_user.py'
+  when:  galaxy_version_number|float >= 18.00
+  become_user: root
+  become_method: sudo
+
+- name: 'Copy password random generator script'
+  template:
+    src: 'pwd_generator.j2'
+    dest: '{{ galaxy_custom_script_path }}/pwd-generator'
+  become_user: root
+  become_method: sudo
+
+- name: Delete old bootstrap user if existing.
+  command: >
+    chdir={{galaxy_install_path}} {{galaxy_venv_path}}/bin/python {{galaxy_custom_script_path}}/manage_galaxy_bootstrap_user.py delete
+    --user {{bootstrap_user_mail}}
+  environment:
+    VIRTUAL_ENV: "{{ galaxy_venv_path }}"
+
+- name: Generate random api key
+  command: "{{ galaxy_custom_script_path }}/pwd-generator -l 32"
+  register: bootstrap_api_key
+  when: create_random_api_key|bool
+
+- set_fact:
+    galaxy_admin_api_key: '{{bootstrap_api_key.stdout}}'
+  when: create_random_api_key|bool
+
+- name: Create Galaxy bootstrap user
+  command: >
+    chdir={{ galaxy_install_path }} {{ galaxy_venv_path }}/bin/python {{ galaxy_custom_script_path }}/manage_galaxy_bootstrap_user.py create
+    --user {{bootstrap_user_mail}}
+    --password {{bootstrap_user_password}}
+    --username {{bootstrap_user_name}}
+    -c {{galaxy_config_file}}
+    --key {{galaxy_admin_api_key}}
+  environment:
+    VIRTUAL_ENV: "{{ galaxy_venv_path }}"
+
+- name: '[release_17.**] Check/Set bootstrap user as Galaxy Admin if admin_users tag is already in the config file'
+  replace: dest={{ galaxy_config_file }} regexp="^[ ]*admin_users[ ]*=[ ]*" replace="admin_users = {{bootstrap_user_mail }},"  #"
+  register: admin_users_found
+  when: galaxy_version_number|float < 18.00
+
+- name: '[release_17.**] Set bootstrap user as Galaxy admin'
+  ini_file:
+    dest: '{{ galaxy_config_file }}'
+    section: 'app:main'
+    option: 'admin_users'
+    value: '{{ bootstrap_user_mail }}'
+  when:
+    - galaxy_version_number|float < 18.00
+    - admin_users_found.msg == ""
+
+- name: Check/Set bootstrap user as Galaxy Admin if admin_users tag is already in the config file
+  replace: dest={{ galaxy_config_file }} regexp="^[ ]*admin_users:[ ]*" replace="  admin_users{{':'}} {{bootstrap_user_mail }},"  #"
+  register: admin_users_found
+  when: galaxy_version_number|float >= 18.00
+
+- name: 'Set bootstrap user as Galaxy admin'
+  command: '{{ galaxy_venv_path }}/bin/python
+            {{ galaxy_custom_script_path }}/parse_galaxy_yaml.py
+            -c "{{ galaxy_config_file }}"
+            -s "galaxy"
+            -o "admin_users"
+            -v "{{ bootstrap_user_mail }}"'
+  when:
+    - galaxy_version_number|float >= 18.00
+    - admin_users_found.msg == ""
+
+- include: stop_postgres.yml
+  when: ansible_virtualization_type == "docker"
+  become_user: root
+  become_method: sudo

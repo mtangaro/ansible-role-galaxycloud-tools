@@ -1,0 +1,44 @@
+---
+- include: start_postgres.yml
+  become_user: root
+  become_method: sudo
+
+- name: Delete bootstrap user
+  command: >
+    chdir={{galaxy_install_path}} {{galaxy_venv_path}}/bin/python {{galaxy_custom_script_path}}/manage_galaxy_bootstrap_user.py delete
+    --user {{bootstrap_user_mail}}
+  environment:
+    VIRTUAL_ENV: "{{ galaxy_venv_path }}"
+
+- name: '[release_17.**] Remove bootstrap user as Galaxy Admin if admin_users tag was already in the config file'
+  replace: dest={{ galaxy_config_file }} regexp="admin_users = {{bootstrap_user_mail}}," replace="admin_users = "  #"
+  register: admin_users_found
+  when: galaxy_version_number|float < 18.01
+
+- name: '[release_17.**] Remove admin_users from galaxy.{{galaxy_config_file_extension}}'
+  replace:
+    dest: '{{galaxy_config_file}}'
+    regexp: 'admin_users = {{ bootstrap_user_mail }}'
+    replace: '#admin_users = None'
+  when:
+    - galaxy_version_number|float < 18.01
+    - admin_users_found.msg == ""
+
+- name: Remove bootstrap user as Galaxy Admin if admin_users tag was already in the config file
+  replace: dest={{ galaxy_config_file }} regexp="admin_users{{':'}} {{bootstrap_user_mail}}," replace="admin_users{{':'}} "  #"
+  register: admin_users_found
+  when: galaxy_version_number|float >= 18.01
+
+- name: 'Remove admin_users from galaxy.{{galaxy_config_file_extension}}'
+  replace:
+    dest: '{{ galaxy_config_file }}'
+    regexp: 'admin_users: {{ bootstrap_user_mail }}'
+    replace: '#admin_users: null'
+  when:
+    - galaxy_version_number|float >= 18.01
+    - admin_users_found.msg == ""
+
+- include: stop_postgres.yml
+  when: ansible_virtualization_type == "docker"
+  become_user: root
+  become_method: sudo
